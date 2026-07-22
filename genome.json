@@ -1,0 +1,13 @@
+{
+  "slug": "crater-runner",
+  "mechanic": "momentum side-scroll rover — a rover auto-drives a rolling regolith line while you manage MOMENTUM rather than a trigger: tap to hop crater-gaps and launch off ramps, hold throttle to boost (it overheats and forces a cooldown), and brake to let a hazard slide past; there are NO guns — instead a front scoop MAGNET-GRABS falling debris, drifting drones and ore into a combo you cash at stage beacons, and a timed shield-pulse ricochets incoming bombs; chain clean air-time and grabs for a rising multiplier; escalating terrain, denser skies and tighter gaps across marked stages with lives",
+  "theme": "synthwave lunar rally — a chrome buggy kicks neon dust and catches big air over cratered magenta regolith, ore-sparks arcing into its scoop, parallax mesas and a drone-swept sky under a low bloom-lit sun",
+  "juice_pack": "dust-and-boom",
+  "difficulty_curve": "gentle→gauntlet",
+  "monetization_slots": ["cabinet_banner", "insert_coin_jar", "arcade_pass_gate"],
+  "seo_target": "lunar rover stunt rally game unblocked",
+  "art_shader": "regolith-parallax-v1",
+  "parents": [],
+  "engine_version": "engine.current",
+  "created_confidence": "pre-traffic"
+}
