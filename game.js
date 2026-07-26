@@ -144,7 +144,15 @@
       boom:     function () { tone({ type: "sawtooth", f0: 200, f1: 40, dur: 0.30, gain: 0.32 }); noise(0.28, 0.30); },
       life:     function () { tone({ type: "sawtooth", f0: 400, f1: 90, dur: 0.38, gain: 0.28 }); },
       beacon:   function () { arp([523, 659, 784, 1047, 1319], 0.075, "triangle"); },
-      over:     function () { arp([440, 349, 262, 175], 0.16, "sawtooth"); }
+      over:     function () { arp([440, 349, 262, 175], 0.16, "sawtooth"); },
+      // BRAKE was previously "rewarded" only by the absence of a crash — silent to the player.
+      // brakeOn gives the hold itself a tactile grind; brakeSave is a distinct, satisfying
+      // whoosh+chime fired the instant a brake-through actually pays off (a hazard cleared
+      // while holding brake), so the skill has its own identity instead of borrowing "clear".
+      brakeOn:  function () { tone({ type: "sawtooth", f0: 130, f1: 90, dur: 0.10, gain: 0.10 }); noise(0.06, 0.05); },
+      brakeSave: function () { tone({ type: "sine", f0: 200, f1: 640, dur: 0.16, gain: 0.24 }); noise(0.05, 0.08); arp([640, 960], 0.05, "sine"); },
+      // maxCombo: the x6 cap used to hit silently. This is the "you're at the ceiling" fanfare.
+      maxCombo: function () { arp([784, 988, 1175, 1568, 2093], 0.05, "triangle"); tone({ type: "sine", f0: 1568, f1: 2400, dur: 0.22, gain: 0.20 }); }
     };
     return {
       unlock: unlock,
@@ -189,15 +197,35 @@
   var els = {
     score: document.getElementById("score"), best: document.getElementById("best"),
     lives: document.getElementById("lives"), level: document.getElementById("level"),
-    combo: document.getElementById("combo"), reso: document.getElementById("reso"),
+    combo: document.getElementById("combo"), heat: document.getElementById("heat"),
     overlay: document.getElementById("overlay"), title: document.getElementById("title"),
     tag: document.getElementById("tag"), start: document.getElementById("start"),
+    daily: document.getElementById("daily"), metaProgress: document.getElementById("meta-progress"),
     shareWrap: document.getElementById("share-wrap"), share: document.getElementById("share"),
     status: document.getElementById("a11y-status")
   };
 
   var best = +(localStorage.getItem("oct.crater-runner.best") || 0);
   if (els.best) els.best.textContent = best;
+
+  /* ---- lightweight meta-progression (furthest stage + a shared daily-seed run) ----------
+   * No new beacon dims/events here (telemetry vocab is out of scope for this pass) — this is
+   * pure localStorage + UI, same pattern as the existing "best" high score.
+   */
+  var bestStage = +(localStorage.getItem("oct.crater-runner.beststage") || 1);
+  function dayIndex() { return Math.floor(Date.now() / 86400000); }           // UTC-day bucket, stable for all players
+  function dailyBestKey() { return "oct.crater-runner.daily." + dayIndex(); }
+  function dailyBest() { return +(localStorage.getItem(dailyBestKey()) || 0); }
+  function renderMetaProgress() {
+    if (!els.metaProgress) return;
+    els.metaProgress.textContent = "furthest stage " + bestStage + " · today's best " + dailyBest();
+  }
+  renderMetaProgress();
+
+  /* ---- haptics (mobile-primary control deck) — guarded, inert on unsupported browsers --- */
+  function haptic(pattern) {
+    try { if (navigator && typeof navigator.vibrate === "function") navigator.vibrate(pattern); } catch (e) {}
+  }
 
   /* ---- deterministic-ish RNG (mulberry32) — reproducible spawn spacing ------------------ */
   var _seed = 0x9e3779b9;
@@ -210,6 +238,13 @@
   }
   function randRange(a, b) { return a + rng() * (b - a); }
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+  function lerpHex(a, b, t) {
+    var pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+    var ar = (pa >> 16) & 255, ag = (pa >> 8) & 255, ab = pa & 255;
+    var br = (pb >> 16) & 255, bg = (pb >> 8) & 255, bb = pb & 255;
+    var r = Math.round(ar + (br - ar) * t), g = Math.round(ag + (bg - ag) * t), b2 = Math.round(ab + (bb - ab) * t);
+    return "rgb(" + r + "," + g + "," + b2 + ")";
+  }
 
   /* ---- beat-my-score deep link (?s=&p=) ------------------------------------------------- */
   var q = new URLSearchParams(location.search);
@@ -316,16 +351,21 @@
   /* ---- procedural ground/sky/beacon generation ------------------------------------------ */
   function spawnAhead(dist) {
     var stage = stageOf(dist);
+    // QA (2026-07): competent runs died at 14-21s / stage 3-4 — the gauntlet ramp hit too
+    // early. diffStage lags two stages behind the real stage number so stages 1-3 all play
+    // at the former stage-1 gentleness (a first run should comfortably clear stage 2), and
+    // the gauntlet proper only bites once a run has proven it can survive that far.
+    var diffStage = Math.max(1, stage - 2);
     while (genGroundX < dist + LOOKAHEAD) {
-      var gMin = Math.max(210 - stage * 9, 118), gMax = gMin + 100;
+      var gMin = Math.max(210 - diffStage * 9, 118), gMax = gMin + 100;
       genGroundX += randRange(gMin, gMax);
       var roll = rng();
       if (roll < 0.36) {
-        var w = clamp(64 + stage * 3 + rng() * 36, 64, 130);
+        var w = clamp(64 + diffStage * 3 + rng() * 36, 64, 130);
         ground.push({ x0: genGroundX, x1: genGroundX + w, type: "gap" });
         genGroundX += w;
       } else if (roll < 0.62) {
-        var rw = 32 + rng() * 14, rh = clamp(22 + stage * 2 + rng() * 22, 22, 90);
+        var rw = 32 + rng() * 14, rh = clamp(22 + diffStage * 2 + rng() * 22, 22, 90);
         ground.push({ x0: genGroundX, x1: genGroundX + rw, type: "rock", h: rh });
         genGroundX += rw;
       } else if (roll < 0.84) {
@@ -336,13 +376,13 @@
         var rmw2 = 48;
         ground.push({ x0: genGroundX, x1: genGroundX + rmw2, type: "ramp" });
         genGroundX += rmw2 + 10;
-        var w2 = clamp(115 + stage * 4 + rng() * 40, 115, 170);
+        var w2 = clamp(115 + diffStage * 4 + rng() * 40, 115, 170);
         ground.push({ x0: genGroundX, x1: genGroundX + w2, type: "gap" });
         genGroundX += w2;
       }
     }
     while (genSkyX < dist + LOOKAHEAD) {
-      var sMin = Math.max(300 - stage * 10, 150), sMax = Math.max(430 - stage * 10, 240);
+      var sMin = Math.max(300 - diffStage * 10, 150), sMax = Math.max(430 - diffStage * 10, 240);
       genSkyX += randRange(sMin, sMax);
       var r2 = rng();
       var type = r2 < 0.40 ? "bomb" : (r2 < 0.75 ? "ore" : "drone");
@@ -365,23 +405,24 @@
     return null;
   }
   /* ---- rover / run lifecycle ------------------------------------------------------------- */
-  function startGame() {
+  function startGame(daily) {
     S = {
       mode: "play", score: 0, lives: 3, level: 1, best: best,
-      dist: 0, speed: SPEED0, boosting: false, braking: false, heat: 0, overheatT: 0,
+      dist: 0, speed: SPEED0, boosting: false, braking: false, prevBraking: false, heat: 0, overheatT: 0,
       airY: 0, vy: 0, grounded: true, holdT: 0,
-      combo: 0, mult: 1, invulnT: 0, shieldT: 0, shieldCd: 0,
+      combo: 0, mult: 1, maxComboHit: false, comboFlash: 0, invulnT: 0, shieldT: 0, shieldCd: 0,
       shakeFlash: 0, lastSig: "", startTs: Date.now(), last: performance.now(),
-      inGap: null, inRock: null, rampArm: true
+      inGap: null, inRock: null, rampArm: true,
+      daily: !!daily
     };
     particles = []; shake = 0;
-    newRun((Date.now() % 2147483647) || 1);
+    newRun(daily ? (dayIndex() || 1) : ((Date.now() % 2147483647) || 1));
     spawnAhead(0);
     els.overlay.classList.add("hide");
     hud();
     emit("play_start", 1, "count", {});
     emit("level", 1, "count", {});
-    announce("Run started. Three lives.");
+    announce(daily ? "Daily run started. Three lives." : "Run started. Three lives.");
     requestAnimationFrame(loop);
   }
 
@@ -392,9 +433,22 @@
   function addCombo(n) {
     S.combo += n;
     S.mult = clamp(1 + Math.floor(S.combo / MULT_STEP), 1, MULT_MAX);
+    if (S.mult >= MULT_MAX && !S.maxComboHit) {
+      S.maxComboHit = true;
+      celebrateMaxCombo();
+    }
   }
   function resetCombo() {
-    S.combo = 0; S.mult = 1;
+    S.combo = 0; S.mult = 1; S.maxComboHit = false;
+  }
+  function celebrateMaxCombo() {
+    S.comboFlash = 1;
+    shake = Math.max(shake, 0.35);
+    spawnSparkle(ROVER_X, BASE_Y - 90, "#ffd23f", 26);
+    spawnSparkle(ROVER_X, BASE_Y - 60, "#20e6ff", 14);
+    Sound.play("maxCombo");
+    haptic([16, 40, 16, 40, 30]);
+    announce("Max combo! x" + MULT_MAX + ".");
   }
 
   function doHop() {
@@ -403,6 +457,7 @@
     Sound.unlock();
     S.vy = JUMP_V; S.grounded = false; S.holdT = HOLD_MAX_T;
     Sound.play("hop");
+    haptic(8);
   }
 
   function fireShield() {
@@ -411,6 +466,20 @@
     Sound.unlock();
     S.shieldT = SHIELD_DUR; S.shieldCd = SHIELD_CD;
     Sound.play("shield");
+    haptic(12);
+  }
+
+  /* ---- BRAKE feedback -------------------------------------------------------------------
+   * Previously braking's only feedback was the absence of a crash. brakeOn gives the hold a
+   * tactile identity; brakeSaveFX celebrates the moment it actually pays off (a hazard cleared
+   * while braking through it) with its own sound, sparkle color, score kicker and haptic.
+   */
+  var BRAKE_SAVE_BONUS_MUL = 1.4;
+  function brakeSaveFX(x, y) {
+    Sound.play("brakeSave");
+    spawnSparkle(x, y, "#bfe9ff", 14);
+    haptic([10, 30, 18]);
+    announce("Brake save!");
   }
 
   function currentSpeedMul() {
@@ -429,6 +498,7 @@
     shake = 1; S.shakeFlash = 0.5;
     spawnBoom(ROVER_X, BASE_Y - 14);
     Sound.play("boom");
+    haptic([25, 30, 55]);
     announce("Crash! " + S.lives + " lives left.");
     hud();
     if (S.lives <= 0) { endGame(false); return; }
@@ -441,8 +511,13 @@
     addScore(bonus);
     S.level = stageOf(S.dist);
     S.speed = SPEED0 + (S.level - 1) * SPEED_RAMP;
+    if (S.level > bestStage) {
+      bestStage = S.level;
+      try { localStorage.setItem("oct.crater-runner.beststage", bestStage); } catch (e) {}
+    }
     spawnSparkle(ROVER_X, BASE_Y - 80, "#ffd23f", 18);
     Sound.play("beacon");
+    haptic([12, 25, 12]);
     announce("Stage " + S.level + ". Combo cashed for " + Math.round(bonus) + ".");
     emit("level", S.level, "count", {});
     emit("score", S.score, "count");
@@ -457,9 +532,19 @@
     emit("play_end", dur, "ms", { score: S.score, level: S.level, won: 0 });
     xp(S.score);
     if (S.score > best) { best = S.score; try { localStorage.setItem("oct.crater-runner.best", best); } catch (e) {} if (els.best) els.best.textContent = best; }
+    var newBest = S.score >= best;
+    var newDaily = false;
+    if (S.daily && S.score > dailyBest()) {
+      newDaily = true;
+      try { localStorage.setItem(dailyBestKey(), S.score); } catch (e) {}
+    }
+    renderMetaProgress();
     els.title.textContent = "GAME OVER";
     els.tag.innerHTML = "score <b style='color:#20e6ff'>" + S.score + "</b> · stage <b>" + S.level + "</b><br>" +
-      (S.score >= best ? "★ NEW BEST ★" : "best " + best) + " — press HOP to run again";
+      (newBest ? "★ NEW BEST ★" : "best " + best) +
+      (S.daily ? (newDaily ? " · ★ NEW DAILY BEST ★" : " · daily best " + dailyBest()) : "") +
+      " · furthest stage " + bestStage +
+      " — press HOP to run again";
     els.start.textContent = "▶ INSERT COIN";
     els.shareWrap.style.display = "";
     announce("Game over. Final score " + S.score + ".");
@@ -520,6 +605,8 @@
 
     S.boosting = boostDown && !brakeDown && S.overheatT <= 0;
     S.braking = brakeDown && !S.boosting;
+    if (S.braking && !S.prevBraking) Sound.play("brakeOn");   // tactile cue the instant brake engages
+    S.prevBraking = S.braking;
 
     // heat meter
     if (S.overheatT > 0) {
@@ -573,9 +660,10 @@
       S._lastGap = g2;
     } else if (S._lastGap && !S._lastGap.cleared) {
       S._lastGap.cleared = true;
-      addScore(GAP_BONUS * S.mult); addCombo(1);
-      Sound.play("clear", { combo: S.combo });
-      spawnSparkle(ROVER_X, BASE_Y - 30, "#20e6ff", 8);
+      var gapBraked = S.braking;
+      addScore((gapBraked ? GAP_BONUS * BRAKE_SAVE_BONUS_MUL : GAP_BONUS) * S.mult); addCombo(1);
+      if (gapBraked) { brakeSaveFX(ROVER_X, BASE_Y - 30); }
+      else { Sound.play("clear", { combo: S.combo }); spawnSparkle(ROVER_X, BASE_Y - 30, "#20e6ff", 8); }
       hud();
       S._lastGap = null;
     }
@@ -587,9 +675,10 @@
       S._lastRock = g2;
     } else if (S._lastRock && !S._lastRock.cleared) {
       S._lastRock.cleared = true;
-      addScore(ROCK_BONUS * S.mult); addCombo(1);
-      Sound.play("clear", { combo: S.combo });
-      spawnSparkle(ROVER_X, BASE_Y - 30, "#ff2fb9", 8);
+      var rockBraked = S.braking;
+      addScore((rockBraked ? ROCK_BONUS * BRAKE_SAVE_BONUS_MUL : ROCK_BONUS) * S.mult); addCombo(1);
+      if (rockBraked) { brakeSaveFX(ROVER_X, BASE_Y - 30); }
+      else { Sound.play("clear", { combo: S.combo }); spawnSparkle(ROVER_X, BASE_Y - 30, "#ff2fb9", 8); }
       hud();
       S._lastRock = null;
     }
@@ -672,23 +761,29 @@
     ctx.save();
     if (sh) ctx.translate((Math.random() - 0.5) * sh, (Math.random() - 0.5) * sh);
 
+    // gauntlet telegraph: the deeper the run, the warmer/redder the whole palette grades —
+    // an environmental read of escalating danger, not just a HUD number climbing.
+    var warmth = S ? clamp(((S.level || 1) - 1) / 7, 0, 1) : 0;
+
     // sky gradient
     var sky1 = ctx.createLinearGradient(0, 0, 0, BASE_Y);
-    sky1.addColorStop(0, "#1a0c3e"); sky1.addColorStop(0.55, "#2a1256"); sky1.addColorStop(1, "#3a1550");
+    sky1.addColorStop(0, lerpHex("#1a0c3e", "#3a0e14", warmth));
+    sky1.addColorStop(0.55, lerpHex("#2a1256", "#5c1620", warmth));
+    sky1.addColorStop(1, lerpHex("#3a1550", "#7a2118", warmth));
     ctx.fillStyle = sky1; ctx.fillRect(0, 0, W, BASE_Y + 40);
 
     // bloom sun
     var sunX = W * 0.72, sunY = 118;
     var sg = ctx.createRadialGradient(sunX, sunY, 4, sunX, sunY, 130);
-    sg.addColorStop(0, "rgba(255,210,63,0.85)"); sg.addColorStop(0.4, "rgba(255,80,180,0.35)"); sg.addColorStop(1, "rgba(255,80,180,0)");
+    sg.addColorStop(0, "rgba(255,210,63,0.85)"); sg.addColorStop(0.4, "rgba(255," + Math.round(80 - 40 * warmth) + ",180," + (0.35 + 0.15 * warmth) + ")"); sg.addColorStop(1, "rgba(255,80,180,0)");
     ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(sunX, sunY, 130, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#ffe9a8"; ctx.beginPath(); ctx.arc(sunX, sunY, 34, 0, Math.PI * 2); ctx.fill();
 
-    drawMesas(mesasFar, 0.10, "#241154", 0.75);
-    drawMesas(mesasNear, 0.22, "#170a3d", 0.9);
+    drawMesas(mesasFar, 0.10, lerpHex("#241154", "#4a121a", warmth), 0.75);
+    drawMesas(mesasNear, 0.22, lerpHex("#170a3d", "#340f14", warmth), 0.9);
 
     // horizon scanline strip
-    ctx.fillStyle = "#0d0530"; ctx.fillRect(0, BASE_Y + 4, W, H - BASE_Y - 4);
+    ctx.fillStyle = lerpHex("#0d0530", "#2e0c10", warmth); ctx.fillRect(0, BASE_Y + 4, W, H - BASE_Y - 4);
     ctx.strokeStyle = "rgba(32,230,255,0.35)"; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(0, BASE_Y + 4); ctx.lineTo(W, BASE_Y + 4); ctx.stroke();
 
@@ -705,6 +800,16 @@
       ctx.fillStyle = "rgba(255,47,185," + (S.shakeFlash * 0.35) + ")";
       ctx.fillRect(0, 0, W, H);
       S.shakeFlash = Math.max(0, S.shakeFlash - 0.04);
+    }
+    // max-combo (x6) celebration pulse — a gold vignette riser, distinct from the crash flash
+    if (S && S.comboFlash > 0) {
+      ctx.save();
+      ctx.globalAlpha = S.comboFlash * 0.4;
+      var cg = ctx.createRadialGradient(W / 2, H * 0.42, 10, W / 2, H * 0.42, W * 0.8);
+      cg.addColorStop(0, "rgba(255,210,63,0.85)"); cg.addColorStop(1, "rgba(255,210,63,0)");
+      ctx.fillStyle = cg; ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+      S.comboFlash = Math.max(0, S.comboFlash - 0.018);
     }
   }
 
@@ -851,9 +956,9 @@
     if (els.lives) els.lives.textContent = S.lives;
     if (els.level) els.level.textContent = S.level;
     if (els.combo) els.combo.textContent = "x" + S.mult;
-    if (els.reso) {
-      els.reso.textContent = Math.round(S.heat) + "%";
-      els.reso.style.color = S.overheatT > 0 ? "#ff2fb9" : (S.heat > 70 ? "#ffd23f" : "#20e6ff");
+    if (els.heat) {
+      els.heat.textContent = Math.round(S.heat) + "%";
+      els.heat.style.color = S.overheatT > 0 ? "#ff2fb9" : (S.heat > 70 ? "#ffd23f" : "#20e6ff");
     }
     if (els.status) {
       var sig = S.mode + "|" + S.level + "|" + S.lives;
@@ -889,7 +994,13 @@
     if (!S || S.mode === "idle" || S.mode === "over") { startGame(); return; }
     if (S.mode === "pause") { togglePause(); return; }
   }
+  function onDailyPress() {
+    Sound.unlock();
+    if (!S || S.mode === "idle" || S.mode === "over") { startGame(true); return; }
+    if (S.mode === "pause") { togglePause(); return; }
+  }
   if (els.start) els.start.addEventListener("click", onStartPress);
+  if (els.daily) els.daily.addEventListener("click", onDailyPress);
   if (els.share) els.share.addEventListener("click", share);
 
   function share() {
@@ -960,15 +1071,19 @@
       lastError: function () { return _lastErr; },
       injectError: function () { if (S) S.__injectErr = true; },
       start: function () { startGame(); },
+      startDaily: function () { startGame(true); },
       hop: function () { doHop(); },
       shield: function () { fireShield(); },
       setBoost: function (v) { kb.boost = !!v; },
       setBrake: function (v) { kb.brake = !!v; },
       forceCrash: function () { if (S) crash("debug"); },
       forceBeacon: function () { if (S && beacons[0]) crossBeacon(beacons[0]); },
+      forceMaxCombo: function () { if (S) { S.combo = MULT_STEP * MULT_MAX; addCombo(0); } },
       ground: function () { return ground.slice(0, 20); },
       sky: function () { return sky.slice(0, 20); },
-      audioMute: function () { return Sound.isMuted(); }
+      audioMute: function () { return Sound.isMuted(); },
+      bestStage: function () { return bestStage; },
+      dailyBest: function () { return dailyBest(); }
     };
   }
 
